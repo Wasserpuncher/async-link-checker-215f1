@@ -1,0 +1,39 @@
+# Dieser Workflow verwendet die Python-Aktion von GitHub zum Einrichten einer Python-Umgebung
+# und zum Installieren von Abhängigkeiten und Ausführen von Tests mit pytest.
+# Weitere Informationen finden Sie unter: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Python CI/CD
+
+on: # Definiert die Ereignisse, die diesen Workflow auslösen
+  push: # Wenn Code in den angegebenen Branches gepusht wird
+    branches: [ "main" ] # Überwacht den 'main'-Branch
+  pull_request: # Wenn ein Pull Request in den angegebenen Branches erstellt oder aktualisiert wird
+    branches: [ "main" ] # Überwacht den 'main'-Branch
+
+jobs: # Definiert eine Reihe von Jobs, die ausgeführt werden sollen
+  build: # Der Name des Jobs
+
+    runs-on: ubuntu-latest # Gibt an, auf welchem Runner-System der Job ausgeführt werden soll
+
+    steps: # Eine Sequenz von Aufgaben, die als Teil des Jobs ausgeführt werden sollen
+    - uses: actions/checkout@v4 # Checkt das Repository auf den Runner aus
+    - name: Set up Python 3.11 # Benennt diesen Schritt
+      uses: actions/setup-python@v4 # Verwendet die GitHub-Aktion zum Einrichten von Python
+      with:
+        python-version: "3.11" # Gibt die zu verwendende Python-Version an
+    - name: Install dependencies # Installiert alle erforderlichen Python-Pakete
+      run: |
+        python -m pip install --upgrade pip # Aktualisiert pip auf die neueste Version
+        pip install -r requirements.txt # Installiert Abhängigkeiten aus requirements.txt
+        pip install pytest # Installiert pytest für die Testausführung
+    - name: Lint with flake8 # Führt einen Linter (flake8) aus, um Code-Stil und Fehler zu prüfen
+      run: |
+        pip install flake8 # Installiert flake8
+        # Stoppt den Build, wenn es Python-Syntaxfehler oder unformatierte Dateien gibt
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Warnt bei anderen Fehlern und Stilproblemen
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+    - name: Test with pytest # Führt Unit-Tests mit pytest aus
+      run: |
+        pytest # Führt alle Tests im Projektverzeichnis aus
+
