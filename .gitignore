@@ -1,0 +1,43 @@
+# Ignoriert typische Python-Dateien und Verzeichnisse, die nicht im Repository versioniert werden sollen.
+
+# Byte-Code-Dateien
+*.pyc
+__pycache__/
+*.so
+*.pyd
+
+# Betriebssystem-spezifische Dateien
+.DS_Store
+.env
+.venv/
+
+# Editor- und IDE-Dateien
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Python-Paketverwaltung
+virtualenv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Test- und Coverage-Dateien
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Protokolldateien
+*.log
+
+# Datenbanken
+*.sqlite3
+
+# Temporäre Dateien
+*~
+
+# Jupyter Notebooks
+.ipynb_checkpoints
