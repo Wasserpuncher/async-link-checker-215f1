@@ -1,0 +1,6 @@
+# Erforderliche Pakete für den asynchronen Link-Checker.
+# Diese Pakete werden für HTTP-Anfragen, HTML-Parsing und asynchrone Operationen benötigt.
+
+httpx>=0.27.0  # Asynchroner HTTP-Client
+beautifulsoup4>=4.12.3 # Bibliothek zum Parsen von HTML und XML
+lxml>=4.9.3 # Schneller und robuster Parser für BeautifulSoup
