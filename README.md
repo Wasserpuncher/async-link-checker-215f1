@@ -1,6 +1,6 @@
 # Async Link Checker
 
-[![Python CI/CD](https://github.com/your-username/async-link-checker/actions/workflows/python-app.yml/badge.svg)](https://github.com/your-username/async-link-checker/actions/workflows/python-app.yml)
+[![Python CI/CD](https://github.com/Wasserpuncher/async-link-checker-215f1/actions/workflows/python-app.yml/badge.svg)](https://github.com/Wasserpuncher/async-link-checker-215f1/actions/workflows/python-app.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An enterprise-ready, asynchronous web-crawler designed to efficiently detect broken links within websites and across external resources. Built with Python's `asyncio` and `httpx`, it offers high concurrency and performance, making it suitable for large-scale web projects.
@@ -28,7 +28,7 @@ An enterprise-ready, asynchronous web-crawler designed to efficiently detect bro
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/async-link-checker.git
+    git clone https://github.com/Wasserpuncher/async-link-checker-215f1.git
     cd async-link-checker
     ```
 
