@@ -75,6 +75,9 @@ class LinkChecker:
         """
         try:
             parsed_url = urlparse(url) # Parsen der URL, um Domain-Informationen zu erhalten
+            # Nur HTTP(S)-URLs derselben Domain gelten als interne Links; andere Schemata (z.B. ftp) sind es nicht.
+            if parsed_url.scheme not in ("http", "https"):
+                return False
             return parsed_url.netloc == self.base_domain # Vergleicht die Domain der URL mit der Basis-Domain
         except ValueError:
             return False # Gibt False zurück, wenn die URL ungültig ist und nicht geparst werden kann
@@ -120,7 +123,10 @@ class LinkChecker:
         soup = BeautifulSoup(html_content, 'lxml') # Erstellt ein BeautifulSoup-Objekt zum Parsen von HTML mit 'lxml'
         found_links = [] # Liste zur Speicherung der gefundenen Links
         for a_tag in soup.find_all('a', href=True): # Findet alle 'a'-Tags mit einem 'href'-Attribut
-            href = a_tag['href'] # Extrahiert den Wert des 'href'-Attributs
+            href = a_tag['href'].strip() # Extrahiert den Wert des 'href'-Attributs
+            # Reine Anker-Links (#...) und leere Hrefs verweisen auf dieselbe Seite und sind keine neuen Links.
+            if not href or href.startswith('#'):
+                continue
             resolved_url = urljoin(current_url, href) # Löst relative URLs in absolute URLs auf
             normalized_url = self._normalize_url(resolved_url) # Normalisiert die aufgelöste URL
             
@@ -161,6 +167,10 @@ class LinkChecker:
                         self.queue.append((link, depth + 1)) # Fügt den internen Link zur Warteschlange für weiteres Crawling hinzu
                     else:
                         self.external_links.add(link) # Fügt den Link zu den externen Links hinzu
+                        # Externe Links werden einmalig auf Erreichbarkeit geprüft (Broken-Link-Erkennung
+                        # "across external resources"), aber nicht weiter durchsucht: Die Tiefe max_depth
+                        # verhindert das Parsen ihrer Unterlinks.
+                        self.queue.append((link, self.max_depth))
 
     async def run(self):
         """

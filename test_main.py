@@ -1,6 +1,7 @@
 import unittest
+import collections
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 import httpx
 from main import LinkChecker
 
@@ -29,11 +30,15 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
         Testet den erfolgreichen Abruf einer URL.
         Simuliert eine erfolgreiche HTTP-Antwort (Status 200).
         """
-        mock_response = AsyncMock()
+        # Das Response-Objekt ist synchron (nur der Netzaufrufe client.get ist async),
+        # daher MagicMock mit echten Attributwerten.
+        mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.text = "<html><body>Hello</body></html>"
         mock_response.raise_for_status.return_value = None
-        mock_get.return_value.__aenter__.return_value = mock_response # Mockt den Kontextmanager von httpx.AsyncClient
+        # Der Code ruft `response = await self.client.get(...)` direkt auf (kein async with),
+        # also liefert der awaited Aufruf direkt das Response-Objekt.
+        mock_get.return_value = mock_response
 
         status, content = await self.checker._fetch_url("http://test.com/page1")
         self.assertEqual(status, 200)
@@ -46,12 +51,12 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
         Testet den Abruf einer URL, die einen HTTP-Fehler zurückgibt (z.B. 404).
         Simuliert eine HTTPStatusError-Ausnahme.
         """
-        mock_response = AsyncMock()
+        mock_response = MagicMock()
         mock_response.status_code = 404
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "Not Found", request=httpx.Request("GET", "http://test.com/404"), response=mock_response
         )
-        mock_get.return_value.__aenter__.return_value = mock_response
+        mock_get.return_value = mock_response
 
         status, content = await self.checker._fetch_url("http://test.com/404")
         self.assertEqual(status, 404)
@@ -63,7 +68,8 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
         Testet den Abruf einer URL, die einen allgemeinen Anfragenfehler verursacht (z.B. Netzwerkproblem).
         Simuliert eine RequestError-Ausnahme.
         """
-        mock_get.return_value.__aenter__.side_effect = httpx.RequestError(
+        # Der awaited client.get-Aufruf selbst wirft den RequestError.
+        mock_get.side_effect = httpx.RequestError(
             "Connection error", request=httpx.Request("GET", "http://bad.com")
         )
 
@@ -119,11 +125,11 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
         Stellt sicher, dass der interne Link zur Warteschlange hinzugefügt wird.
         """
         html_content = "<html><body><a href=\"/new-page\"></a></body></html>"
-        mock_response = AsyncMock()
+        mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.text = html_content
         mock_response.raise_for_status.return_value = None
-        mock_get.return_value.__aenter__.return_value = mock_response
+        mock_get.return_value = mock_response
 
         # Leert die Warteschlange und visited_urls, um den Test zu isolieren
         self.checker.queue.clear()
@@ -143,12 +149,12 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
         Testet die Verarbeitung einer URL, die defekt ist.
         Stellt sicher, dass der Link zu den defekten Links hinzugefügt wird.
         """
-        mock_response = AsyncMock()
+        mock_response = MagicMock()
         mock_response.status_code = 404
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "Not Found", request=httpx.Request("GET", "http://test.com/broken"), response=mock_response
         )
-        mock_get.return_value.__aenter__.return_value = mock_response
+        mock_get.return_value = mock_response
 
         self.checker.queue.clear()
         self.checker.visited_urls.clear()
@@ -168,7 +174,7 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
         """
         # Mock-Antworten für die URLs
         def get_mock_response(url):
-            mock_resp = AsyncMock()
+            mock_resp = MagicMock()
             mock_resp.raise_for_status.return_value = None
             if url == "http://test.com":
                 mock_resp.status_code = 200
@@ -194,7 +200,8 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
                 )
             return mock_resp
 
-        mock_get.return_value.__aenter__.side_effect = lambda: get_mock_response(mock_get.call_args[0][0])
+        # client.get(url, ...) wird direkt awaited; die URL kommt als erstes Positionsargument.
+        mock_get.side_effect = lambda url, *args, **kwargs: get_mock_response(url)
 
         # Setzt max_depth auf 2, damit /page2 gecrawlt wird
         self.checker.max_depth = 2
@@ -227,7 +234,7 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
         """
         # Mock-Antworten für die URLs
         def get_mock_response(url):
-            mock_resp = AsyncMock()
+            mock_resp = MagicMock()
             mock_resp.raise_for_status.return_value = None
             if url == "http://test.com":
                 mock_resp.status_code = 200
@@ -242,7 +249,8 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
                 mock_resp.text = '<html><body>Other</body></html>'
             return mock_resp
 
-        mock_get.return_value.__aenter__.side_effect = lambda: get_mock_response(mock_get.call_args[0][0])
+        # client.get(url, ...) wird direkt awaited; die URL kommt als erstes Positionsargument.
+        mock_get.side_effect = lambda url, *args, **kwargs: get_mock_response(url)
 
         self.checker.max_depth = 1
         self.checker.queue = collections.deque([(self.base_url, 0)])
