@@ -1,0 +1,7 @@
+{
+  "base_url": "https://example.com",
+  "max_depth": 3,
+  "concurrency": 20,
+  "timeout": 10,
+  "ignore_patterns": ["*/logout", "*/admin/*"]
+}

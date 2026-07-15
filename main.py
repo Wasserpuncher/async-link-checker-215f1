@@ -4,8 +4,24 @@ import argparse
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin, urldefrag
 import collections
+import fnmatch
+import json
 import logging
+import os
 import sys
+
+# Standardname der Konfigurationsdatei, die geladen wird, wenn --config nicht angegeben ist.
+DEFAULT_CONFIG_FILENAME = "linkcheck.json"
+
+# Eingebaute Standardwerte. Werden von der Konfigurationsdatei und dann von
+# expliziten Kommandozeilenargumenten überschrieben.
+DEFAULT_SETTINGS = {
+    "base_url": None,
+    "max_depth": 2,
+    "concurrency": 10,
+    "timeout": 10,
+    "ignore_patterns": [],
+}
 
 # Konfiguration des Loggers
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,10 +38,11 @@ class LinkChecker:
 
     def __init__(
         self, 
-        base_url: str, 
+        base_url: str,
         max_depth: int = 2,
         concurrency_limit: int = 10,
-        timeout: int = 10
+        timeout: int = 10,
+        ignore_patterns: list = None
     ):
         """
         Initialisiert den LinkChecker.
@@ -41,6 +58,9 @@ class LinkChecker:
         self.max_depth = max_depth # Setzt die maximale Crawling-Tiefe
         self.concurrency_limit = concurrency_limit # Setzt das Limit für gleichzeitige Anfragen
         self.timeout = timeout # Setzt das Timeout für HTTP-Anfragen
+        # Liste von Ignorier-Mustern (Glob oder Teilzeichenkette). URLs, die auf ein
+        # Muster passen, werden weder abgerufen noch in die Warteschlange aufgenommen.
+        self.ignore_patterns = list(ignore_patterns) if ignore_patterns else []
 
         self.visited_urls = set() # Set zur Speicherung bereits besuchter URLs, um Redundanz zu vermeiden
         self.broken_links = {} # Dictionary zur Speicherung defekter Links und ihrer Statuscodes
@@ -62,6 +82,26 @@ class LinkChecker:
             str: Die normalisierte URL ohne Fragment.
         """
         return urldefrag(url).url # Entfernt den Fragment-Teil (#anchor) einer URL
+
+    def _is_ignored(self, url: str) -> bool:
+        """
+        Prüft, ob eine URL auf eines der konfigurierten Ignorier-Muster passt.
+
+        Ein Muster passt, wenn es als Glob-Muster (fnmatch) zutrifft oder als
+        einfache Teilzeichenkette in der URL enthalten ist.
+
+        Args:
+            url (str): Die zu prüfende URL.
+
+        Returns:
+            bool: True, wenn die URL ignoriert werden soll, sonst False.
+        """
+        for pattern in self.ignore_patterns:
+            if not pattern:
+                continue
+            if pattern in url or fnmatch.fnmatch(url, pattern):
+                return True
+        return False
 
     def _is_same_domain(self, url: str) -> bool:
         """
@@ -149,6 +189,10 @@ class LinkChecker:
             logger.debug(f"Skipping already visited URL: {url}") # Debug-Meldung für übersprungene URL
             return
 
+        if self._is_ignored(url): # Überspringt URLs, die auf ein Ignorier-Muster passen
+            logger.debug(f"Skipping ignored URL: {url}")
+            return
+
         self.visited_urls.add(url) # Fügt die URL zu den besuchten URLs hinzu
 
         status_code, html_content = await self._fetch_url(url) # Holt den Inhalt der URL ab
@@ -161,6 +205,9 @@ class LinkChecker:
         if html_content and depth < self.max_depth: # Verarbeitet den Inhalt nur, wenn vorhanden und die maximale Tiefe nicht erreicht ist
             links = self._parse_links(html_content, url) # Parsen der Links im HTML-Inhalt
             for link in links:
+                if self._is_ignored(link): # Überspringt Links, die auf ein Ignorier-Muster passen
+                    logger.debug(f"Ignoring link by pattern: {link}")
+                    continue
                 if link not in self.visited_urls: # Fügt nur neue, unbesuchte Links zur Warteschlange hinzu
                     if self._is_same_domain(link): # Prüft, ob der Link zur gleichen Domain gehört
                         self.internal_links.add(link) # Fügt den Link zu den internen Links hinzu
@@ -219,6 +266,53 @@ class LinkChecker:
             "external_links": sorted(list(self.external_links)) # Sortiert die externen Links für konsistente Ausgabe
         }
 
+def load_config(path: str) -> dict:
+    """
+    Lädt eine JSON-Konfigurationsdatei und gibt ihren Inhalt als Dictionary zurück.
+
+    Nur Schlüssel aus DEFAULT_SETTINGS werden übernommen; unbekannte Schlüssel
+    werden ignoriert, um Tippfehler nicht stillschweigend als Einstellungen zu deuten.
+
+    Args:
+        path (str): Pfad zur JSON-Konfigurationsdatei.
+
+    Returns:
+        dict: Die geladene Konfiguration (nur bekannte Schlüssel).
+
+    Raises:
+        FileNotFoundError: Wenn die Datei nicht existiert.
+        ValueError: Wenn die Datei kein gültiges JSON-Objekt enthält.
+    """
+    with open(path, "r", encoding="utf-8") as f: # Öffnet die Konfigurationsdatei
+        data = json.load(f) # Parst den JSON-Inhalt (stdlib, keine externen Deps)
+    if not isinstance(data, dict):
+        raise ValueError("Config file must contain a JSON object.")
+    return {k: v for k, v in data.items() if k in DEFAULT_SETTINGS}
+
+
+def resolve_settings(cli_overrides: dict, config: dict) -> dict:
+    """
+    Führt eingebaute Defaults, Konfigurationsdatei und CLI-Argumente zusammen.
+
+    Vorrang (aufsteigend): DEFAULT_SETTINGS < Konfigurationsdatei < CLI-Argumente.
+    Nur Werte, die nicht None sind, überschreiben; so bleiben nicht gesetzte
+    CLI-Flags wirkungslos und die Konfigurationsdatei greift.
+
+    Args:
+        cli_overrides (dict): Auf der Kommandozeile gesetzte Werte (None = nicht gesetzt).
+        config (dict): Aus der Konfigurationsdatei geladene Werte.
+
+    Returns:
+        dict: Die endgültigen Einstellungen.
+    """
+    settings = dict(DEFAULT_SETTINGS) # Startet mit einer Kopie der eingebauten Defaults
+    for source in (config, cli_overrides):
+        for key, value in source.items():
+            if value is not None and key in settings:
+                settings[key] = value
+    return settings
+
+
 async def main():
     """
     Hauptfunktion zum Parsen von Befehlszeilenargumenten und Starten des Crawlers.
@@ -227,36 +321,70 @@ async def main():
         description="Asynchronous Web-Crawler for detecting broken links."
     ) # Erstellt einen Argument-Parser
     parser.add_argument(
-        "url", 
-        type=str, 
-        help="The starting URL for the crawl."
-    ) # Argument für die Start-URL
+        "url",
+        type=str,
+        nargs="?",
+        default=None,
+        help="The starting URL for the crawl. Optional if provided via config file."
+    ) # Argument für die Start-URL (optional, wenn in der Konfigurationsdatei gesetzt)
     parser.add_argument(
-        "--depth", 
-        type=int, 
-        default=2, 
+        "--config",
+        type=str,
+        default=None,
+        help=f"Path to a JSON config file. Defaults to '{DEFAULT_CONFIG_FILENAME}' if present."
+    ) # Pfad zur JSON-Konfigurationsdatei
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=None,
         help="Maximum depth to crawl. Default is 2."
     ) # Argument für die maximale Crawling-Tiefe
     parser.add_argument(
-        "--concurrency", 
-        type=int, 
-        default=10, 
+        "--concurrency",
+        type=int,
+        default=None,
         help="Maximum concurrent HTTP requests. Default is 10."
     ) # Argument für die maximale Parallelität
     parser.add_argument(
-        "--timeout", 
-        type=int, 
-        default=10, 
+        "--timeout",
+        type=int,
+        default=None,
         help="Timeout for HTTP requests in seconds. Default is 10."
     ) # Argument für das HTTP-Anfragen-Timeout
 
     args = parser.parse_args() # Parsen der Befehlszeilenargumente
 
+    # Konfigurationsdatei bestimmen: explizit via --config oder Standarddatei, falls vorhanden.
+    config = {}
+    config_path = args.config
+    if config_path is None and os.path.isfile(DEFAULT_CONFIG_FILENAME):
+        config_path = DEFAULT_CONFIG_FILENAME
+    if config_path is not None:
+        try:
+            config = load_config(config_path) # Lädt die Konfiguration aus der Datei
+            logger.info(f"Loaded configuration from {config_path}")
+        except (FileNotFoundError, ValueError) as e:
+            logger.error(f"Could not load config file '{config_path}': {e}")
+            sys.exit(1)
+
+    cli_overrides = {
+        "base_url": args.url,
+        "max_depth": args.depth,
+        "concurrency": args.concurrency,
+        "timeout": args.timeout,
+    } # CLI-Werte; None bedeutet "nicht gesetzt"
+
+    settings = resolve_settings(cli_overrides, config) # Führt Defaults, Config und CLI zusammen
+
+    if not settings["base_url"]:
+        parser.error("A start URL is required, either as an argument or via 'base_url' in the config file.")
+
     checker = LinkChecker(
-        base_url=args.url,
-        max_depth=args.depth,
-        concurrency_limit=args.concurrency,
-        timeout=args.timeout
+        base_url=settings["base_url"],
+        max_depth=settings["max_depth"],
+        concurrency_limit=settings["concurrency"],
+        timeout=settings["timeout"],
+        ignore_patterns=settings["ignore_patterns"]
     ) # Erstellt eine Instanz des LinkCheckers
 
     await checker.run() # Startet den Crawling-Prozess

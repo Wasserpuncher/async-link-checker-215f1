@@ -57,9 +57,40 @@ python main.py <START_URL> [OPTIONS]
 
 ### Options
 
+*   `--config <PATH>`: Path to a JSON configuration file (see below). Defaults to `linkcheck.json` in the current directory if present.
 *   `--depth <INT>`: Maximum depth to crawl. Default is `2`.
 *   `--concurrency <INT>`: Maximum concurrent HTTP requests. Default is `10`.
 *   `--timeout <INT>`: Timeout for HTTP requests in seconds. Default is `10`.
+
+### Configuration file
+
+Instead of passing every parameter on the command line, you can store crawl settings in a JSON file (standard library only, no extra dependencies). By default the tool loads `linkcheck.json` from the current directory if it exists; use `--config` to point at a different file.
+
+```json
+{
+  "base_url": "https://example.com",
+  "max_depth": 3,
+  "concurrency": 20,
+  "timeout": 10,
+  "ignore_patterns": ["*/logout", "*/admin/*", "mailto:"]
+}
+```
+
+Supported keys:
+
+*   `base_url`: Start URL for the crawl (used when no URL is given on the command line).
+*   `max_depth`, `concurrency`, `timeout`: Same meaning as the corresponding options.
+*   `ignore_patterns`: A list of glob patterns / substrings; any URL matching one of them is neither fetched nor reported.
+
+Precedence is **built-in defaults < config file < command-line arguments**, so an explicit flag always wins over the config file. Unknown keys in the file are ignored.
+
+```bash
+# Use the default linkcheck.json in the current directory
+python main.py
+
+# Use an explicit config file, overriding its depth on the command line
+python main.py --config configs/prod.json --depth 5
+```
 
 ### Examples
 

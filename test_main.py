@@ -1,9 +1,12 @@
 import unittest
 import collections
 import asyncio
+import json
+import os
+import tempfile
 from unittest.mock import MagicMock, patch
 import httpx
-from main import LinkChecker
+from main import LinkChecker, load_config, resolve_settings, DEFAULT_SETTINGS
 
 class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
     """
@@ -269,6 +272,148 @@ class TestLinkChecker(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results["broken_links"]["http://test.com/broken"], 404)
         self.assertIn("http://test.com/broken", results["internal_links"])
         self.assertFalse(results["external_links"])
+
+
+class TestConfigFile(unittest.TestCase):
+    """
+    Tests für das Laden und Anwenden der JSON-Konfigurationsdatei.
+    """
+
+    def _write_config(self, data):
+        """Schreibt ein dict als JSON in eine temporäre Datei und gibt den Pfad zurück."""
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_load_config_reads_known_keys(self):
+        """load_config liest bekannte Schlüssel und filtert unbekannte heraus."""
+        path = self._write_config({
+            "base_url": "http://example.com",
+            "max_depth": 4,
+            "concurrency": 3,
+            "timeout": 7,
+            "ignore_patterns": ["*/logout"],
+            "unknown_key": "should be dropped",
+        })
+        config = load_config(path)
+        self.assertEqual(config["base_url"], "http://example.com")
+        self.assertEqual(config["max_depth"], 4)
+        self.assertEqual(config["concurrency"], 3)
+        self.assertEqual(config["timeout"], 7)
+        self.assertEqual(config["ignore_patterns"], ["*/logout"])
+        self.assertNotIn("unknown_key", config)
+
+    def test_load_config_rejects_non_object(self):
+        """load_config lehnt JSON ab, das kein Objekt ist."""
+        path = self._write_config([1, 2, 3])
+        with self.assertRaises(ValueError):
+            load_config(path)
+
+    def test_load_config_missing_file(self):
+        """load_config wirft FileNotFoundError für eine nicht existierende Datei."""
+        with self.assertRaises(FileNotFoundError):
+            load_config("/nonexistent/path/linkcheck.json")
+
+    def test_resolve_settings_defaults_only(self):
+        """Ohne Config und CLI bleiben die eingebauten Defaults erhalten."""
+        settings = resolve_settings({}, {})
+        self.assertEqual(settings, DEFAULT_SETTINGS)
+
+    def test_resolve_settings_config_over_defaults(self):
+        """Die Konfigurationsdatei überschreibt die eingebauten Defaults."""
+        settings = resolve_settings({}, {"max_depth": 9, "timeout": 42})
+        self.assertEqual(settings["max_depth"], 9)
+        self.assertEqual(settings["timeout"], 42)
+        self.assertEqual(settings["concurrency"], DEFAULT_SETTINGS["concurrency"])
+
+    def test_resolve_settings_cli_over_config(self):
+        """Explizite CLI-Werte haben Vorrang vor der Konfigurationsdatei."""
+        cli = {"max_depth": 1, "timeout": None, "base_url": "http://cli.example"}
+        config = {"max_depth": 9, "timeout": 42, "base_url": "http://config.example"}
+        settings = resolve_settings(cli, config)
+        # CLI setzt max_depth und base_url; timeout ist None (nicht gesetzt) -> Config greift.
+        self.assertEqual(settings["max_depth"], 1)
+        self.assertEqual(settings["base_url"], "http://cli.example")
+        self.assertEqual(settings["timeout"], 42)
+
+    def test_config_applied_to_checker(self):
+        """Ein aus Config-Werten gebauter LinkChecker übernimmt diese Werte."""
+        config = load_config(self._write_config({
+            "base_url": "http://example.com",
+            "max_depth": 5,
+            "concurrency": 2,
+            "timeout": 3,
+            "ignore_patterns": ["*/admin/*"],
+        }))
+        settings = resolve_settings({}, config)
+        checker = LinkChecker(
+            base_url=settings["base_url"],
+            max_depth=settings["max_depth"],
+            concurrency_limit=settings["concurrency"],
+            timeout=settings["timeout"],
+            ignore_patterns=settings["ignore_patterns"],
+        )
+        self.assertEqual(checker.max_depth, 5)
+        self.assertEqual(checker.concurrency_limit, 2)
+        self.assertEqual(checker.timeout, 3)
+        self.assertEqual(checker.ignore_patterns, ["*/admin/*"])
+
+    def test_is_ignored_glob_and_substring(self):
+        """_is_ignored trifft sowohl bei Glob-Mustern als auch bei Teilzeichenketten."""
+        checker = LinkChecker("http://test.com", ignore_patterns=["*/private/*", "logout"])
+        self.assertTrue(checker._is_ignored("http://test.com/private/secret"))
+        self.assertTrue(checker._is_ignored("http://test.com/user/logout"))
+        self.assertFalse(checker._is_ignored("http://test.com/public/page"))
+
+    def test_default_no_ignore_patterns(self):
+        """Ohne ignore_patterns wird nichts ignoriert (Rückwärtskompatibilität)."""
+        checker = LinkChecker("http://test.com")
+        self.assertEqual(checker.ignore_patterns, [])
+        self.assertFalse(checker._is_ignored("http://test.com/anything"))
+
+
+class TestIgnorePatternsBehavior(unittest.IsolatedAsyncioTestCase):
+    """
+    Verhaltenstest: Ignorier-Muster aus der Config verhindern das Crawlen/Erfassen
+    passender Links tatsächlich.
+    """
+
+    @patch('httpx.AsyncClient.get')
+    async def test_ignored_links_are_skipped(self, mock_get):
+        """Links, die auf ein Ignorier-Muster passen, landen weder in der Warteschlange
+        noch in den Ergebnismengen; nicht passende Links schon."""
+        html = (
+            '<html><body>'
+            '<a href="/admin/dashboard">Admin</a>'
+            '<a href="/about">About</a>'
+            '</body></html>'
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = html
+        mock_response.raise_for_status.return_value = None
+        mock_get.return_value = mock_response
+
+        checker = LinkChecker(
+            "http://test.com", max_depth=2, concurrency_limit=5, timeout=1,
+            ignore_patterns=["*/admin/*"]
+        )
+        checker.queue.clear()
+        checker.visited_urls.clear()
+
+        await checker._process_url("http://test.com", 0)
+
+        # Der ignorierte Admin-Link darf nirgends auftauchen.
+        self.assertNotIn("http://test.com/admin/dashboard", checker.internal_links)
+        self.assertNotIn(
+            ("http://test.com/admin/dashboard", 1),
+            checker.queue
+        )
+        # Der reguläre Link muss weiterhin erfasst werden.
+        self.assertIn("http://test.com/about", checker.internal_links)
+        self.assertIn(("http://test.com/about", 1), checker.queue)
 
 
 if __name__ == '__main__':
